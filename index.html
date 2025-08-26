@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sing & Match Notes</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 40px;
+    }
+    select, button {
+      font-size: 1.2em;
+      margin: 10px;
+      padding: 8px;
+    }
+    #detectedNote {
+      font-size: 2em;
+      margin-top: 20px;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <h1>Sing & Match Notes</h1>
+  <p>Select a note, play it, then sing it. The app will show the note you’re singing.</p>
+
+  <label for="noteSelect">Select Note:</label>
+  <select id="noteSelect"></select>
+  <button id="playNote">Play Note</button>
+  <button id="toggleMic">Start Microphone</button>
+
+  <div id="detectedNote">Detected Note: --</div>
+
+  <script>
+    // --- Generate Note List C2–E5 ---
+    const notes = [];
+    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    for (let octave = 2; octave <= 5; octave++) {
+      for (let name of noteNames) {
+        if (octave === 5 && name > 'E') break;
+        notes.push(name + octave);
+      }
+    }
+
+    const noteSelect = document.getElementById('noteSelect');
+    notes.forEach(note => {
+      const opt = document.createElement('option');
+      opt.value = note;
+      opt.textContent = note;
+      noteSelect.appendChild(opt);
+    });
+
+    // --- Frequency Map ---
+    function noteToFrequency(note) {
+      const A4 = 440;
+      const noteIndex = noteNames.indexOf(note.replace(/\d/, '').replace('#','♯').replace('♯','#').replace(/\d/,''));
+      const octave = parseInt(note.match(/\d/)[0]);
+      const semitone = noteNames.indexOf(note.replace(/\d/, ''));
+      const n = semitone + (octave - 4) * 12 - 9; 
+      return A4 * Math.pow(2, n / 12);
+    }
+
+    // --- Play Selected Note ---
+    let audioCtx = null;
+    document.getElementById('playNote').addEventListener('click', () => {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = noteToFrequency(noteSelect.value);
+      osc.connect(audioCtx.destination);
+      osc.start();
+      setTimeout(() => osc.stop(), 1000);
+    });
+
+    // --- Microphone Pitch Detection ---
+    let micActive = false;
+    let mediaStream = null;
+    let analyser, dataArray;
+
+    function freqToNoteName(freq) {
+      if (freq <= 0) return '--';
+      const A4 = 440;
+      const semitone = 12 * (Math.log(freq / A4) / Math.log(2));
+      const noteIndex = Math.round(semitone) + 69;
+      const name = noteNames[noteIndex % 12];
+      const octave = Math.floor(noteIndex / 12) - 1;
+      return name + octave;
+    }
+
+    document.getElementById('toggleMic').addEventListener('click', async () => {
+      if (!micActive) {
+        micActive = true;
+        document.getElementById('toggleMic').textContent = 'Stop Microphone';
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = audioCtx.createMediaStreamSource(mediaStream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        dataArray = new Float32Array(analyser.fftSize);
+        detectPitch();
+      } else {
+        micActive = false;
+        document.getElementById('toggleMic').textContent = 'Start Microphone';
+        if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+      }
+    });
+
+    function detectPitch() {
+      if (!micActive) return;
+      analyser.getFloatTimeDomainData(dataArray);
+      const freq = autoCorrelate(dataArray, audioCtx.sampleRate);
+      document.getElementById('detectedNote').textContent = 'Detected Note: ' + freqToNoteName(freq);
+      requestAnimationFrame(detectPitch);
+    }
+
+    // --- AutoCorrelation for Pitch Detection ---
+    function autoCorrelate(buffer, sampleRate) {
+      let SIZE = buffer.length;
+      let rms = 0;
+      for (let i = 0; i < SIZE; i++) rms += buffer[i] * buffer[i];
+      rms = Math.sqrt(rms / SIZE);
+      if (rms < 0.01) return -1;
+
+      let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
+      for (let i = 0; i < SIZE / 2; i++) {
+        if (Math.abs(buffer[i]) < threshold) { r1 = i; break; }
+      }
+      for (let i = 1; i < SIZE / 2; i++) {
+        if (Math.abs(buffer[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
+      }
+
+      buffer = buffer.slice(r1, r2);
+      SIZE = buffer.length;
+
+      const c = new Array(SIZE).fill(0);
+      for (let i = 0; i < SIZE; i++)
+        for (let j = 0; j < SIZE - i; j++)
+          c[i] = c[i] + buffer[j] * buffer[j + i];
+
+      let d = 0; while (c[d] > c[d + 1]) d++;
+      let maxval = -1, maxpos = -1;
+      for (let i = d; i < SIZE; i++) {
+        if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+      }
+
+      let T0 = maxpos;
+      return sampleRate / T0;
+    }
+  </script>
+</body>
+</html>
